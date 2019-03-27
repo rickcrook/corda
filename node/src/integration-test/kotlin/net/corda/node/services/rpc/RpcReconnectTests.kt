@@ -2,8 +2,8 @@ package net.corda.node.services.rpc
 
 import net.corda.client.rpc.internal.ReconnectingRPCClient
 import net.corda.client.rpc.internal.ReconnectingRPCClient.ObserverNotifier
-import net.corda.client.rpc.internal.ReconnectingRPCClient.asReconnecting
 import net.corda.client.rpc.internal.ReconnectingRPCClient.ReconnectingRPCConnection
+import net.corda.client.rpc.internal.ReconnectingRPCClient.asReconnecting
 import net.corda.core.contracts.Amount
 import net.corda.core.flows.StateMachineRunId
 import net.corda.core.identity.Party
@@ -12,11 +12,13 @@ import net.corda.core.messaging.StateMachineUpdate
 import net.corda.core.node.services.Vault
 import net.corda.core.node.services.vault.PageSpecification
 import net.corda.core.node.services.vault.QueryCriteria
+import net.corda.core.node.services.vault.builder
 import net.corda.core.utilities.OpaqueBytes
 import net.corda.core.utilities.contextLogger
 import net.corda.core.utilities.getOrThrow
 import net.corda.finance.contracts.asset.Cash
 import net.corda.finance.flows.CashIssueAndPaymentFlow
+import net.corda.finance.schemas.CashSchemaV1
 import net.corda.node.services.Permissions
 import net.corda.testing.core.DUMMY_BANK_A_NAME
 import net.corda.testing.core.DUMMY_BANK_B_NAME
@@ -41,6 +43,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.concurrent.thread
 import kotlin.math.absoluteValue
+import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
@@ -72,7 +75,7 @@ class RpcReconnectTests {
         val proxyPort = 20007
 
         // When this reaches 0 - the test will end.
-        val flowsCountdownLatch = CountDownLatch(nrOfFlowsToRun)
+        val flowsCountdownLatch = CountDownLatch(nrOfFlowsToRun + 1)
 
         // These are the expected progress steps for the CashIssueAndPayFlow.
         val expectedProgress = listOf(
@@ -108,8 +111,11 @@ class RpcReconnectTests {
 
             // Start nrOfFlowsToRun flows in the background.
             var flowProgressEvents: Map<StateMachineRunId, List<String>>? = null
+            var lostFlows: Int = 0
             thread(name = "Flow feeder") {
-                flowProgressEvents = runTestFlows(bankAConnection, nrOfFlowsToRun, flowsCountdownLatch, bankB, notary)
+                val (_flowProgressEvents, _lostFlows) = runTestFlows(bankAConnection, nrOfFlowsToRun, flowsCountdownLatch, bankB, notary)
+                flowProgressEvents = _flowProgressEvents
+                lostFlows = _lostFlows
             }
 
             // Observe the vault.
@@ -204,17 +210,14 @@ class RpcReconnectTests {
             val nrFailures = nrRestarts.get()
             log.info("Checking results after $nrFailures restarts.")
 
-            // The only time when flows can be left without any status is when the node died exactly when that flow was started.
-            assertTrue(flowProgressEvents!!.size + nrFailures >= nrOfFlowsToRun, "Not all flows were triggered")
-
             // The progress status for each flow can only miss the last events, because the node might have been killed.
-            val missingProgressEvents = flowProgressEvents!!.filterValues { expectedProgress.subList(0, it.size - 1) == it }
+            val missingProgressEvents = flowProgressEvents!!.filterValues { expectedProgress.subList(0, it.size) != it }
             assertTrue(missingProgressEvents.isEmpty(), "The flow progress tracker is missing events: $missingProgressEvents")
 
             // Check that enough vault events were received.
             // This check is fuzzy because events can go missing during node restarts.
             // Ideally there should be nrOfFlowsToRun events receive but some might get lost for each restart.
-            assertTrue(vaultEvents!!.size + nrFailures * 3 >= nrOfFlowsToRun, "Not all vault events were received")
+            assertTrue(vaultEvents!!.size + nrFailures * 2 >= nrOfFlowsToRun, "Not all vault events were received")
 
             // Query the vault and check that states were created for all confirmed flows
 
@@ -222,7 +225,7 @@ class RpcReconnectTests {
                     .vaultQueryByWithPagingSpec(Cash.State::class.java, QueryCriteria.VaultQueryCriteria(status = Vault.StateStatus.CONSUMED), PageSpecification(1, 10000))
                     .states
 
-            assertTrue(allCashStates.size >= flowProgressEvents!!.size, "Not all flows were executed successfully")
+            assertEquals(nrOfFlowsToRun, allCashStates.size, "Not all flows were executed successfully")
 
             // Check that no flow was triggered twice.
             val duplicates = allCashStates.groupBy { it.state.data.amount }.filterValues { it.size > 1 }
@@ -233,54 +236,86 @@ class RpcReconnectTests {
             assertTrue(stateMachineEvents.count { it is StateMachineUpdate.Added } > nrOfFlowsToRun / 2, "Too many Added state machine events lost.")
             assertTrue(stateMachineEvents.count { it is StateMachineUpdate.Removed } > nrOfFlowsToRun / 2, "Too many Removed state machine events lost.")
 
+            assertEquals(nrOfFlowsToRun, flowProgressEvents!!.size + lostFlows, "Not all flows were triggered")
+
             tcpProxy.close()
             bankAConnection.forceClose()
         }
     }
 
     @Synchronized
-    fun MutableMap<StateMachineRunId, MutableList<String>>.addEvent(id: StateMachineRunId, progress: String): Boolean {
-        return getOrPut(id) { mutableListOf() }.add(progress)
+    fun MutableMap<StateMachineRunId, MutableList<String>>.addEvent(id: StateMachineRunId, progress: String?): Boolean {
+        return getOrPut(id) { mutableListOf() }.let { if (progress != null) it.add(progress) else false }
     }
 
     /**
      * This function runs [nrOfFlowsToRun] flows and returns the progress of each one of these flows.
      */
-    private fun runTestFlows(bankAConnection: ReconnectingRPCConnection, nrOfFlowsToRun: Int, flowsCountdownLatch: CountDownLatch, bankB: NodeHandle, notary: Party): Map<StateMachineRunId, List<String>> {
+    private fun runTestFlows(bankAConnection: ReconnectingRPCConnection, nrOfFlowsToRun: Int, flowsCountdownLatch: CountDownLatch, bankB: NodeHandle, notary: Party): Pair<Map<StateMachineRunId, List<String>>, Int> {
         val baseAmount = Amount.parseCurrency("0 USD")
         val issuerRef = OpaqueBytes.of(0x01)
 
         val flowProgressEvents: MutableMap<StateMachineRunId, MutableList<String>> = mutableMapOf()
-        val flowIds: MutableList<StateMachineRunId?> = mutableListOf()
+        val flowsWithNoProgress = AtomicInteger()
 
+        fun runFlow(i: Int) {
+            val flowHandle = bankAConnection.reconnectingProxy().startTrackedFlowDynamic(
+                    CashIssueAndPaymentFlow::class.java,
+                    baseAmount.plus(Amount.parseCurrency("$i USD")),
+                    issuerRef,
+                    bankB.nodeInfo.legalIdentities.first(),
+                    false,
+                    notary
+            )
+            val flowId = flowHandle.id
+            log.info("Started flow $i with flowId: $flowId, cnt: ${flowsCountdownLatch.count}")
+            flowProgressEvents.addEvent(flowId, null)
+
+            // No reconnecting possible.
+            flowHandle.progress.subscribe { prog ->
+                flowProgressEvents.addEvent(flowId, prog)
+                log.info("Progress $flowId : $prog")
+            }
+        }
+
+        val retryThreads = mutableListOf<Thread>()
         for (i in (1..nrOfFlowsToRun)) {
             log.info("Starting flow $i")
             try {
-                val flowHandle = bankAConnection.reconnectingProxy().startTrackedFlowDynamic(
-                        CashIssueAndPaymentFlow::class.java,
-                        baseAmount.plus(Amount.parseCurrency("$i USD")),
-                        issuerRef,
-                        bankB.nodeInfo.legalIdentities.first(),
-                        false,
-                        notary
-                )
-                val flowId = flowHandle.id
-                flowIds += flowId
-                log.info("Started flow : $flowId, cnt: ${flowsCountdownLatch.count}")
-
-                // No reconnecting
-                flowHandle.progress.subscribe { prog ->
-                    flowProgressEvents.addEvent(flowId, prog)
-                    log.info("Progress $flowId : $prog")
-                }
+                runFlow(i)
             } catch (e: ReconnectingRPCClient.CouldNotStartFlowException) {
                 log.error("Couldn't start flow $i")
+                retryThreads += thread(name = "RetryFlow $i") {
+                    // This showcases a pattern that can be applied to decide if a flow needs retriggering.
+
+                    // Wait for the flow to execute if it was actually triggered.
+                    Thread.sleep(5000)
+
+                    // Query for a state that is the result of this flow
+                    val criteria = QueryCriteria.VaultCustomQueryCriteria(builder { CashSchemaV1.PersistentCashState::pennies.equal(i.toLong() * 100) }, status = Vault.StateStatus.ALL)
+                    val results = bankAConnection.reconnectingProxy().vaultQueryByCriteria(criteria, Cash.State::class.java)
+
+                    // Retry when the output state is missing
+                    if (results.states.isEmpty()) {
+                        log.info("Retrying flow $i")
+                        // TODO  - make this recursive to check for reconnects
+                        runFlow(i)
+                    } else {
+                        log.info("Failed flow $i executed successfully.")
+                        flowsWithNoProgress.incrementAndGet()
+                    }
+                }
             } finally {
                 flowsCountdownLatch.countDown()
             }
         }
 
-        return flowProgressEvents
+        for (retryThread in retryThreads) {
+            retryThread.join()
+        }
+
+        flowsCountdownLatch.countDown()
+        return flowProgressEvents to flowsWithNoProgress.get()
     }
 
     /**
