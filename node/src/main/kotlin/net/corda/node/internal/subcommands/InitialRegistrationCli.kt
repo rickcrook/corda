@@ -98,24 +98,26 @@ class InitialRegistration(val baseDirectory: Path, private val networkRootTrustS
         val brokersDirectory = baseDirectory / "brokers"
         check(!brokersDirectory.exists()) { "The node folder contains a brokers directory. $EXISTING_STATE_GENERIC_WARNING" }
 
+        val datasource = DataSourceFactory.createDataSource(conf.dataSourceProperties, false)
         try {
-            val datasource = DataSourceFactory.createDataSource(conf.dataSourceProperties, false)
             val connectionMetadata = datasource.connection.metaData
             // Accounting for different case-sensitivity behaviours (i.e. H2 creates tables in upper-case in some cases)
             val tablesLowerCaseResultSet = connectionMetadata.getTables(null, null, "$NODE_DATABASE_PREFIX%", null)
-            val tablesUpperCaseResultSet = connectionMetadata.getTables(null, null, "${NODE_DATABASE_PREFIX.toUpperCase()}%", null)
-            if (!tablesLowerCaseResultSet.isClosed) {
+            tablesLowerCaseResultSet.use {
                 check(!tablesLowerCaseResultSet.first()) {
                     "The database contains Corda-specific tables, while it should be empty. $EXISTING_STATE_GENERIC_WARNING"
                 }
             }
-            if (!tablesUpperCaseResultSet.isClosed) {
+            val tablesUpperCaseResultSet = connectionMetadata.getTables(null, null, "${NODE_DATABASE_PREFIX.toUpperCase()}%", null)
+            tablesUpperCaseResultSet.use {
                 check(!tablesUpperCaseResultSet.first()) {
                     "The database contains Corda-specific tables, while it should be empty. $EXISTING_STATE_GENERIC_WARNING"
                 }
             }
         } catch (exception: SQLException) {
             throw Exception("An error occurred whilst connecting to \"${conf.dataSourceProperties.getProperty("dataSource.url")}\". ", exception)
+        } finally {
+            datasource.connection.close()
         }
     }
 
