@@ -1,10 +1,7 @@
 package net.corda.node.internal.subcommands
 
 import net.corda.cliutils.CliWrapperBase
-import net.corda.core.internal.VisibleForTesting
-import net.corda.core.internal.createFile
-import net.corda.core.internal.div
-import net.corda.core.internal.exists
+import net.corda.core.internal.*
 import net.corda.core.utilities.Try
 import net.corda.node.InitialRegistrationCmdLineOptions
 import net.corda.node.NodeRegistrationOption
@@ -95,26 +92,41 @@ class InitialRegistration(val baseDirectory: Path, private val networkRootTrustS
 
     private fun verifyNoStateFromPreviousRuns(conf: NodeConfiguration) {
         val artemisDirectory = baseDirectory / "artemis"
-        check(!artemisDirectory.exists()) { "The node folder contains an artemis directory. $EXISTING_STATE_GENERIC_WARNING" }
+        if (artemisDirectory.exists()) {
+            check(artemisDirectory.isDirectory()) { "$artemisDirectory is not a directory." }
+            check(artemisDirectory.list().isEmpty()) { "The node folder contains a non-empty artemis directory. $EXISTING_STATE_GENERIC_WARNING" }
+        }
+
         val brokersDirectory = baseDirectory / "brokers"
-        check(!brokersDirectory.exists()) { "The node folder contains a brokers directory. $EXISTING_STATE_GENERIC_WARNING" }
+        if (brokersDirectory.exists()) {
+            check(brokersDirectory.isDirectory()) { "$brokersDirectory is not a directory." }
+            check(brokersDirectory.list().isEmpty()) { "The node folder contains a non-empty brokers directory. $EXISTING_STATE_GENERIC_WARNING" }
+        }
 
         val datasource = DataSourceFactory.createDataSource(conf.dataSourceProperties, false)
         try {
             val connection = datasource.connection
             connection.use {
-                val connectionMetadata = connection.metaData
+                val tables = mutableSetOf<String>()
+                val connectionMetadata = it.metaData
+
                 // Accounting for different case-sensitivity behaviours (i.e. H2 creates tables in upper-case in some cases)
                 val tablesLowerCaseResultSet = connectionMetadata.getTables(null, null, "$NODE_DATABASE_PREFIX%", null)
-                tablesLowerCaseResultSet.use {
-                    check(!tablesLowerCaseResultSet.next()) {
-                        "The database contains Corda-specific tables, while it should be empty. $EXISTING_STATE_GENERIC_WARNING"
-                    }
+                while (tablesLowerCaseResultSet.next()) {
+                    tables.add(tablesLowerCaseResultSet.getString(3))
                 }
                 val tablesUpperCaseResultSet = connectionMetadata.getTables(null, null, "${NODE_DATABASE_PREFIX.toUpperCase()}%", null)
-                tablesUpperCaseResultSet.use {
-                    check(!tablesUpperCaseResultSet.next()) {
-                        "The database contains Corda-specific tables, while it should be empty. $EXISTING_STATE_GENERIC_WARNING"
+                while (tablesUpperCaseResultSet.next()) {
+                    tables.add(tablesUpperCaseResultSet.getString(3).toLowerCase())
+                }
+
+                if (tables.contains("node_infos")) {
+                    val statement = it.createStatement()
+                    if (statement.execute("SELECT COUNT(*) FROM NODE_INFOS")) {
+                        if (statement.resultSet.next()) {
+                            val nrNodeInfos = statement.resultSet.getInt(1)
+                            check(nrNodeInfos == 0) { "The node info table contains node infos. $EXISTING_STATE_GENERIC_WARNING" }
+                        }
                     }
                 }
             }
