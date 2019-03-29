@@ -6,6 +6,7 @@ import net.corda.node.internal.NodeStartup
 import net.corda.node.services.config.NodeConfiguration
 import net.corda.node.internal.Node
 import net.corda.testing.driver.internal.incrementalPortAllocation
+import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.h2.tools.Server
 import org.junit.AfterClass
 import org.junit.BeforeClass
@@ -69,8 +70,10 @@ class InitialRegistrationCliTest {
 
         private fun executeSqlStatement(sqlStatement: String) {
             val connection = DriverManager.getConnection(getJdbcUrl(), h2User, h2Password)
-            val statement = connection.createStatement()
-            statement.execute(sqlStatement)
+            connection.use {
+                val statement = connection.createStatement()
+                statement.execute(sqlStatement)
+            }
         }
 
         private fun getJdbcUrl(): String {
@@ -78,28 +81,39 @@ class InitialRegistrationCliTest {
         }
     }
 
-    @Test(expected = IllegalStateException::class)
+    @Test
     fun `registration fails when there is existing artemis folder`() {
         Files.createDirectories(baseDirectory / "artemis")
 
-        initialRegistration.registerWithNetwork(node.configuration)
+        assertThatThrownBy { initialRegistration.registerWithNetwork(node.configuration) }
+                .isInstanceOf(IllegalStateException::class.java)
+                .hasMessageContaining("The node folder contains an artemis directory")
+
+        Files.deleteIfExists(baseDirectory / "artemis")
     }
 
-    @Test(expected = IllegalStateException::class)
+    @Test
     fun `registration fails when there is existing brokers folder`() {
         Files.createDirectories(baseDirectory / "brokers")
 
-        initialRegistration.registerWithNetwork(node.configuration)
+        assertThatThrownBy { initialRegistration.registerWithNetwork(node.configuration) }
+                .isInstanceOf(IllegalStateException::class.java)
+                .hasMessageContaining("The node folder contains a brokers directory")
+
+        Files.deleteIfExists(baseDirectory / "brokers")
     }
 
-    @Test(expected = IllegalStateException::class)
+    @Test
     fun `registration fails when database contains tables`() {
+        datasourceProperties.setProperty("dataSourceClassName", "org.h2.jdbcx.JdbcDataSource")
         datasourceProperties.setProperty("dataSource.url", getJdbcUrl())
         datasourceProperties.setProperty("dataSource.user", h2User)
         datasourceProperties.setProperty("dataSource.password", h2Password)
         Mockito.`when`(nodeConfiguration.dataSourceProperties).thenReturn(datasourceProperties)
 
-        initialRegistration.registerWithNetwork(node.configuration)
+        assertThatThrownBy { initialRegistration.registerWithNetwork(node.configuration) }
+                .isInstanceOf(IllegalStateException::class.java)
+                .hasMessageContaining("The database contains Corda-specific tables")
     }
 
 }

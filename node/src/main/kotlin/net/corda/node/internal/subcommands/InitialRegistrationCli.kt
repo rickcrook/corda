@@ -19,6 +19,7 @@ import picocli.CommandLine.Option
 import java.io.File
 import java.lang.IllegalStateException
 import java.nio.file.Path
+import java.sql.Connection
 import java.sql.DriverManager
 import java.sql.SQLException
 import java.util.function.Consumer
@@ -100,24 +101,25 @@ class InitialRegistration(val baseDirectory: Path, private val networkRootTrustS
 
         val datasource = DataSourceFactory.createDataSource(conf.dataSourceProperties, false)
         try {
-            val connectionMetadata = datasource.connection.metaData
-            // Accounting for different case-sensitivity behaviours (i.e. H2 creates tables in upper-case in some cases)
-            val tablesLowerCaseResultSet = connectionMetadata.getTables(null, null, "$NODE_DATABASE_PREFIX%", null)
-            tablesLowerCaseResultSet.use {
-                check(tablesLowerCaseResultSet.fetchSize == 0) {
-                    "The database contains Corda-specific tables, while it should be empty. $EXISTING_STATE_GENERIC_WARNING"
+            val connection = datasource.connection
+            connection.use {
+                val connectionMetadata = connection.metaData
+                // Accounting for different case-sensitivity behaviours (i.e. H2 creates tables in upper-case in some cases)
+                val tablesLowerCaseResultSet = connectionMetadata.getTables(null, null, "$NODE_DATABASE_PREFIX%", null)
+                tablesLowerCaseResultSet.use {
+                    check(tablesLowerCaseResultSet.fetchSize == 0) {
+                        "The database contains Corda-specific tables, while it should be empty. $EXISTING_STATE_GENERIC_WARNING"
+                    }
                 }
-            }
-            val tablesUpperCaseResultSet = connectionMetadata.getTables(null, null, "${NODE_DATABASE_PREFIX.toUpperCase()}%", null)
-            tablesUpperCaseResultSet.use {
-                check(tablesUpperCaseResultSet.fetchSize == 0) {
-                    "The database contains Corda-specific tables, while it should be empty. $EXISTING_STATE_GENERIC_WARNING"
+                val tablesUpperCaseResultSet = connectionMetadata.getTables(null, null, "${NODE_DATABASE_PREFIX.toUpperCase()}%", null)
+                tablesUpperCaseResultSet.use {
+                    check(tablesUpperCaseResultSet.fetchSize == 0) {
+                        "The database contains Corda-specific tables, while it should be empty. $EXISTING_STATE_GENERIC_WARNING"
+                    }
                 }
             }
         } catch (exception: SQLException) {
             throw Exception("An error occurred whilst connecting to \"${conf.dataSourceProperties.getProperty("dataSource.url")}\". ", exception)
-        } finally {
-            datasource.connection.close()
         }
     }
 
