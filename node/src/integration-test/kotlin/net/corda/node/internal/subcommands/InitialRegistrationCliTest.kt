@@ -53,7 +53,7 @@ class InitialRegistrationCliTest {
 
             port = incrementalPortAllocation(port).nextPort()
             server = Server.createTcpServer("-tcpPort", port.toString(), "-tcpAllowOthers", "-tcpDaemon").start()
-            executeSqlStatement("CREATE TABLE NODE_ATTACHMENTS(USERNAME VARCHAR(20));")
+            executeSqlStatement("CREATE TABLE NODE_INFOS(id INT); INSERT INTO NODE_INFOS (id) VALUES (1);")
 
             initialRegistration = InitialRegistration(baseDirectory, networkTrustRootFile, networkTrustRootPassword, nodeStartup)
         }
@@ -64,7 +64,7 @@ class InitialRegistrationCliTest {
             baseDirectory.deleteRecursively()
             networkTrustRootFile.deleteRecursively()
 
-            executeSqlStatement("DROP TABLE NODE_ATTACHMENTS;")
+            executeSqlStatement("DROP TABLE NODE_INFOS;")
             server.shutdown()
         }
 
@@ -106,7 +106,7 @@ class InitialRegistrationCliTest {
     }
 
     @Test
-    fun `registration fails when database contains tables`() {
+    fun `registration fails when node infos table contains entries`() {
         datasourceProperties.setProperty("dataSourceClassName", "org.h2.jdbcx.JdbcDataSource")
         datasourceProperties.setProperty("dataSource.url", getJdbcUrl())
         datasourceProperties.setProperty("dataSource.user", h2User)
@@ -117,5 +117,4 @@ class InitialRegistrationCliTest {
                 .isInstanceOf(IllegalStateException::class.java)
                 .hasMessageContaining("The node info table contains node infos")
     }
-
 }
