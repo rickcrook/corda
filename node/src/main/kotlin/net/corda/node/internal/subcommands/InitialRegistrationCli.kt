@@ -104,13 +104,13 @@ class InitialRegistration(val baseDirectory: Path, private val networkRootTrustS
             // Accounting for different case-sensitivity behaviours (i.e. H2 creates tables in upper-case in some cases)
             val tablesLowerCaseResultSet = connectionMetadata.getTables(null, null, "$NODE_DATABASE_PREFIX%", null)
             tablesLowerCaseResultSet.use {
-                check(!tablesLowerCaseResultSet.first()) {
+                check(tablesLowerCaseResultSet.fetchSize == 0) {
                     "The database contains Corda-specific tables, while it should be empty. $EXISTING_STATE_GENERIC_WARNING"
                 }
             }
             val tablesUpperCaseResultSet = connectionMetadata.getTables(null, null, "${NODE_DATABASE_PREFIX.toUpperCase()}%", null)
             tablesUpperCaseResultSet.use {
-                check(!tablesUpperCaseResultSet.first()) {
+                check(tablesUpperCaseResultSet.fetchSize == 0) {
                     "The database contains Corda-specific tables, while it should be empty. $EXISTING_STATE_GENERIC_WARNING"
                 }
             }
