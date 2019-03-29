@@ -83,23 +83,25 @@ class InitialRegistrationCliTest {
 
     @Test
     fun `registration fails when there is existing artemis folder`() {
-        Files.createDirectories(baseDirectory / "artemis")
+        Files.createDirectories(baseDirectory / "artemis" / "a")
 
         assertThatThrownBy { initialRegistration.registerWithNetwork(node.configuration) }
                 .isInstanceOf(IllegalStateException::class.java)
-                .hasMessageContaining("The node folder contains an artemis directory")
+                .hasMessageContaining("The node folder contains a non-empty artemis directory")
 
+        Files.deleteIfExists(baseDirectory / "artemis" / "a")
         Files.deleteIfExists(baseDirectory / "artemis")
     }
 
     @Test
     fun `registration fails when there is existing brokers folder`() {
-        Files.createDirectories(baseDirectory / "brokers")
+        Files.createDirectories(baseDirectory / "brokers" / "a")
 
         assertThatThrownBy { initialRegistration.registerWithNetwork(node.configuration) }
                 .isInstanceOf(IllegalStateException::class.java)
-                .hasMessageContaining("The node folder contains a brokers directory")
+                .hasMessageContaining("The node folder contains a non-empty brokers directory")
 
+        Files.deleteIfExists(baseDirectory / "brokers" / "a")
         Files.deleteIfExists(baseDirectory / "brokers")
     }
 
@@ -113,7 +115,7 @@ class InitialRegistrationCliTest {
 
         assertThatThrownBy { initialRegistration.registerWithNetwork(node.configuration) }
                 .isInstanceOf(IllegalStateException::class.java)
-                .hasMessageContaining("The database contains Corda-specific tables")
+                .hasMessageContaining("The node info table contains node infos")
     }
 
 }
